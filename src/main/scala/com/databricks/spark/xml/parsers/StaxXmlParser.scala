@@ -15,13 +15,14 @@
  */
 package com.databricks.spark.xml.parsers
 
-import java.io.ByteArrayInputStream
+import java.io.StringReader
+
 import javax.xml.stream.events.{Attribute, XMLEvent}
 import javax.xml.stream.events._
 import javax.xml.stream._
 
 import scala.collection.mutable.ArrayBuffer
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 import scala.util.control.NonFatal
 
 import org.slf4j.LoggerFactory
@@ -31,33 +32,36 @@ import org.apache.spark.sql.Row
 import org.apache.spark.sql.types._
 import com.databricks.spark.xml.util.TypeCast._
 import com.databricks.spark.xml.XmlOptions
+import com.databricks.spark.xml.util._
 
 /**
  * Wraps parser to iteration process.
  */
-private[xml] object StaxXmlParser {
+private[xml] object StaxXmlParser extends Serializable {
   private val logger = LoggerFactory.getLogger(StaxXmlParser.getClass)
 
   def parse(
       xml: RDD[String],
       schema: StructType,
       options: XmlOptions): RDD[Row] = {
-    def failedRecord(record: String): Option[Row] = {
+    def failedRecord(record: String, cause: Throwable = null): Option[Row] = {
       // create a row even if no corrupt record column is present
-      if (options.failFast) {
-        throw new RuntimeException(
-          s"Malformed line in FAILFAST mode: ${record.replaceAll("\n", "")}")
-      } else if (options.dropMalformed) {
-        logger.warn(s"Dropping malformed line: ${record.replaceAll("\n", "")}")
-        None
-      } else {
-        val row = new Array[Any](schema.length)
-        val nameToIndex = schema.map(_.name).zipWithIndex.toMap
-        nameToIndex.get(options.columnNameOfCorruptRecord).foreach { corruptIndex =>
-          require(schema(corruptIndex).dataType == StringType)
-          row.update(corruptIndex, record)
-        }
-        Some(Row.fromSeq(row))
+      options.parseMode match {
+        case FailFastMode =>
+          throw new RuntimeException(
+            s"Malformed line in FAILFAST mode: ${record.replaceAll("\n", "")}", cause)
+        case DropMalformedMode =>
+          val reason = if (cause != null) s"Reason: ${cause.getMessage}" else ""
+          logger.warn(s"Dropping malformed line: ${record.replaceAll("\n", "")}. $reason")
+          None
+        case PermissiveMode =>
+          val row = new Array[Any](schema.length)
+          val nameToIndex = schema.map(_.name).zipWithIndex.toMap
+          nameToIndex.get(options.columnNameOfCorruptRecord).foreach { corruptIndex =>
+            require(schema(corruptIndex).dataType == StringType)
+            row.update(corruptIndex, record)
+          }
+          Some(Row.fromSeq(row))
       }
     }
 
@@ -74,19 +78,18 @@ private[xml] object StaxXmlParser {
       iter.flatMap { xml =>
         // It does not have to skip for white space, since `XmlInputFormat`
         // always finds the root tag without a heading space.
-        val reader = new ByteArrayInputStream(xml.getBytes)
-        val eventReader = factory.createXMLEventReader(reader)
+        val eventReader = factory.createXMLEventReader(new StringReader(xml))
         val parser = factory.createFilteredReader(eventReader, filter)
         try {
           val rootEvent =
             StaxXmlParserUtils.skipUntil(parser, XMLStreamConstants.START_ELEMENT)
           val rootAttributes =
-            rootEvent.asStartElement.getAttributes.map(_.asInstanceOf[Attribute]).toArray
+            rootEvent.asStartElement.getAttributes.asScala.map(_.asInstanceOf[Attribute]).toArray
           Some(convertObject(parser, schema, options, rootAttributes))
             .orElse(failedRecord(xml))
         } catch {
-          case NonFatal(_) =>
-            failedRecord(xml)
+          case NonFatal(e) =>
+            failedRecord(xml, e)
         }
       }
     }
@@ -99,8 +102,8 @@ private[xml] object StaxXmlParser {
       parser: XMLEventReader,
       dataType: DataType,
       options: XmlOptions): Any = {
-    def convertComplicatedType: DataType => Any = {
-      case dt: StructType => convertObject(parser, dt, options)
+    def convertComplicatedType(dt: DataType): Any = dt match {
+      case st: StructType => convertObject(parser, st, options)
       case MapType(StringType, vt, _) => convertMap(parser, vt, options)
       case ArrayType(st, _) => convertField(parser, st, options)
       case _: StringType => StaxXmlParserUtils.currentStructureAsString(parser)
@@ -108,8 +111,14 @@ private[xml] object StaxXmlParser {
 
     (parser.peek, dataType) match {
       case (_: StartElement, dt: DataType) => convertComplicatedType(dt)
+      case (_: EndElement, _: StringType) =>
+        if (options.treatEmptyValuesAsNulls){
+          null
+        } else {
+          ""
+        }
       case (_: EndElement, _: DataType) => null
-      case (c: Characters, dt: DataType) if c.isWhiteSpace =>
+      case (c: Characters, _: DataType) if c.isWhiteSpace =>
         // When `Characters` is found, we need to look further to decide
         // if this is really data or space between other elements.
         val data = c.getData
@@ -215,10 +224,9 @@ private[xml] object StaxXmlParser {
       nameToIndex.get(f).foreach { row(_) = v }
     }
 
-    // Return null rather than empty row. For nested structs empty row causes
-    // ArrayOutOfBounds exceptions when executing an action.
     if (valuesMap.isEmpty) {
-      null
+      // Return an empty row with all nested elements by the schema set to null.
+      Row.fromSeq(Seq.fill(schema.fieldNames.length)(null))
     } else {
       Row.fromSeq(row)
     }
@@ -234,17 +242,16 @@ private[xml] object StaxXmlParser {
       options: XmlOptions,
       rootAttributes: Array[Attribute] = Array.empty): Row = {
     val row = new Array[Any](schema.length)
+    val nameToIndex = schema.map(_.name).zipWithIndex.toMap
+    // If there are attributes, then we process them first.
+    convertAttributes(rootAttributes, schema, options).toSeq.foreach { case (f, v) =>
+      nameToIndex.get(f).foreach { row(_) = v }
+    }
     var shouldStop = false
     while (!shouldStop) {
       parser.nextEvent match {
         case e: StartElement =>
-          val nameToIndex = schema.map(_.name).zipWithIndex.toMap
-          // If there are attributes, then we process them first.
-          convertAttributes(rootAttributes, schema, options).toSeq.foreach { case (f, v) =>
-            nameToIndex.get(f).foreach { row(_) = v }
-          }
-
-          val attributes = e.getAttributes.map(_.asInstanceOf[Attribute]).toArray
+          val attributes = e.getAttributes.asScala.map(_.asInstanceOf[Attribute]).toArray
           val field = e.asStartElement.getName.getLocalPart
 
           nameToIndex.get(field) match {

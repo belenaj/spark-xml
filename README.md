@@ -1,6 +1,6 @@
 # XML Data Source for Apache Spark
 
-[![Build Status](https://travis-ci.org/databricks/spark-xml.svg?branch=master)](https://travis-ci.org/databricks/spark-xml) [![codecov.io](http://codecov.io/github/databricks/spark-xml/coverage.svg?branch=master)](http://codecov.io/github/databricks/spark-xml?branch=master)
+[![Build Status](https://travis-ci.org/databricks/spark-xml.svg?branch=master)](https://travis-ci.org/databricks/spark-xml) [![codecov](https://codecov.io/gh/databricks/spark-xml/branch/master/graph/badge.svg)](https://codecov.io/gh/databricks/spark-xml)
 
 - A library for parsing and querying XML data with Apache Spark, for Spark SQL and DataFrames.
 The structure and test tools are mostly copied from [CSV Data Source for Spark](https://github.com/databricks/spark-csv).
@@ -10,41 +10,42 @@ The structure and test tools are mostly copied from [CSV Data Source for Spark](
 
 ## Requirements
 
-This library requires Spark 2.0+ for 0.4.x.
+This library requires Spark 2.2+ for 0.5.x.
 
-For version that works with Spark 1.x, please check for [branch-0.3](https://github.com/databricks/spark-xml/tree/branch-0.3).
-
+For Spark 2.0.x 2.1.x, use version 0.4.x.
+For a version that works with Spark 1.x, please check for [branch-0.3](https://github.com/databricks/spark-xml/tree/branch-0.3).
 
 ## Linking
 You can link against this library in your program at the following coordinates:
-
-### Scala 2.10
-
-```
-groupId: com.databricks
-artifactId: spark-xml_2.10
-version: 0.4.1
-```
 
 ### Scala 2.11
 
 ```
 groupId: com.databricks
 artifactId: spark-xml_2.11
-version: 0.4.1
+version: 0.5.0
+```
+
+### Scala 2.12
+
+```
+groupId: com.databricks
+artifactId: spark-xml_2.12
+version: 0.5.0
 ```
 
 ## Using with Spark shell
-This package can be added to  Spark using the `--packages` command line option.  For example, to include it when starting the spark shell:
+This package can be added to Spark using the `--packages` command line option. For example, to include it when starting the spark shell:
 
-### Spark compiled with Scala 2.10
-```
-$SPARK_HOME/bin/spark-shell --packages com.databricks:spark-xml_2.10:0.4.1
-```
 
 ### Spark compiled with Scala 2.11
 ```
-$SPARK_HOME/bin/spark-shell --packages com.databricks:spark-xml_2.11:0.4.1
+$SPARK_HOME/bin/spark-shell --packages com.databricks:spark-xml_2.11:0.5.0
+```
+
+### Spark compiled with Scala 2.12
+```
+$SPARK_HOME/bin/spark-shell --packages com.databricks:spark-xml_2.12:0.5.0
 ```
 
 ## Features
@@ -56,7 +57,9 @@ When reading files the API accepts several options:
 * `excludeAttribute` : Whether you want to exclude attributes in elements or not. Default is false.
 * `treatEmptyValuesAsNulls` : (DEPRECATED: use `nullValue` set to `""`) Whether you want to treat whitespaces as a null value. Default is false
 * `mode`: The mode for dealing with corrupt records during parsing. Default is `PERMISSIVE`.
-  * `PERMISSIVE` : sets other fields to `null` when it meets a corrupted record, and puts the malformed string into a new field configured by `columnNameOfCorruptRecord`. When a schema is set by user, it sets `null` for extra fields.
+  * `PERMISSIVE` :
+    * When it encounters a corrupted record, it sets all fields to `null` and puts the malformed string into a new field configured by `columnNameOfCorruptRecord`.
+    * When it encounters a field of the wrong datatype, it sets the offending field to `null`.
   * `DROPMALFORMED` : ignores the whole corrupted records.
   * `FAILFAST` : throws an exception when it meets corrupted records.
 * `columnNameOfCorruptRecord`: The name of new field where malformed strings are stored. Default is `_corrupt_record`.
@@ -74,7 +77,7 @@ When writing files the API accepts several options:
 * `valueTag`: The tag used for the value when there are attributes in the element having no child. Default is `_VALUE`.
 * `compression`: compression codec to use when saving to file. Should be the fully qualified name of a class implementing `org.apache.hadoop.io.compress.CompressionCodec` or one of case-insensitive shorten names (`bzip2`, `gzip`, `lz4`, and `snappy`). Defaults to no compression when a codec is not specified.
 
-Currently it supports the shortened name usage. You can use just `xml` instead of `com.databricks.spark.xml` from Spark 1.5.0+
+Currently it supports the shortened name usage. You can use just `xml` instead of `com.databricks.spark.xml`.
 
 ## Structure Conversion
 
@@ -86,12 +89,10 @@ Due to the structure differences between `DataFrame` and XML, there are some con
 - __Attributes__: Attributes are converted as fields with the heading prefix, `attributePrefix`.
 
     ```xml
-    ...
     <one myOneAttrib="AAAA">
         <two>two</two>
         <three>three</three>
     </one>
-    ...
     ```
     produces a schema below:
 
@@ -105,12 +106,10 @@ Due to the structure differences between `DataFrame` and XML, there are some con
 - __Value in an element that has no child elements but attributes__: The value is put in a separate field, `valueTag`.
 
     ```xml
-    ...
     <one>
         <two myTwoAttrib="BBBBB">two</two>
         <three>three</three>
     </one>
-    ...
     ```
     produces a schema below:
     ```
@@ -143,14 +142,12 @@ Due to the structure differences between `DataFrame` and XML, there are some con
 
     produces a XML file below:
     ```xml
-    ...
     <a>
         <item>aa</item>
     </a>
     <a>
         <item>bb</item>
     </a>
-    ...
     ```
 
 
@@ -180,12 +177,15 @@ OPTIONS (path "books.xml", rowTag "book")
 
 ### Scala API
 
+Import `com.databricks.spark.xml._` to get implicits that add the `.xml(...)` method to `DataFrame`.
+You can also use `.format("xml")` and `.load(...)`.
+
 ```scala
-import org.apache.spark.sql.SQLContext
+import org.apache.spark.sql.SparkSession
 import com.databricks.spark.xml._
 
-val sqlContext = new SQLContext(sc)
-val df = sqlContext.read
+val spark = SparkSession.builder.getOrCreate()
+val df = spark.read
   .option("rowTag", "book")
   .xml("books.xml")
 
@@ -196,69 +196,49 @@ selectedData.write
   .xml("newbooks.xml")
 ```
 
-Alternatively you can specify the format to use instead:
-
-```scala
-import org.apache.spark.sql.SQLContext
-
-val sqlContext = new SQLContext(sc)
-val df = sqlContext.read
-  .format("com.databricks.spark.xml")
-  .option("rowTag", "book")
-  .load("books.xml")
-
-val selectedData = df.select("author", "_id")
-selectedData.write
-  .format("com.databricks.spark.xml")
-  .option("rootTag", "books")
-  .option("rowTag", "book")
-  .save("newbooks.xml")
-```
-
 You can manually specify the schema when reading data:
 
 ```scala
-import org.apache.spark.sql.SQLContext
-import org.apache.spark.sql.types.{StructType, StructField, StringType, DoubleType};
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.types.{StructType, StructField, StringType, DoubleType}
+import com.databricks.spark.xml._
 
-val sqlContext = new SQLContext(sc)
+val spark = SparkSession.builder.getOrCreate()
 val customSchema = StructType(Array(
   StructField("_id", StringType, nullable = true),
   StructField("author", StringType, nullable = true),
   StructField("description", StringType, nullable = true),
-  StructField("genre", StringType ,nullable = true),
+  StructField("genre", StringType, nullable = true),
   StructField("price", DoubleType, nullable = true),
   StructField("publish_date", StringType, nullable = true),
   StructField("title", StringType, nullable = true)))
 
 
-val df = sqlContext.read
-  .format("com.databricks.spark.xml")
+val df = spark.read
   .option("rowTag", "book")
   .schema(customSchema)
-  .load("books.xml")
+  .xml("books.xml")
 
 val selectedData = df.select("author", "_id")
 selectedData.write
-  .format("com.databricks.spark.xml")
   .option("rootTag", "books")
   .option("rowTag", "book")
-  .save("newbooks.xml")
+  .xml("newbooks.xml")
 ```
 
 ### Java API
 
 ```java
-import org.apache.spark.sql.SQLContext
+import org.apache.spark.sql.SparkSession;
 
-SQLContext sqlContext = new SQLContext(sc);
-DataFrame df = sqlContext.read()
-  .format("com.databricks.spark.xml")
+SparkSession spark = SparkSession.builder().getOrCreate();
+DataFrame df = spark.read()
+  .format("xml")
   .option("rowTag", "book")
   .load("books.xml");
 
 df.select("author", "_id").write()
-  .format("com.databricks.spark.xml")
+  .format("xml")
   .option("rootTag", "books")
   .option("rowTag", "book")
   .save("newbooks.xml");
@@ -266,10 +246,10 @@ df.select("author", "_id").write()
 
 You can manually specify schema:
 ```java
-import org.apache.spark.sql.SQLContext;
+import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.types.*;
 
-SQLContext sqlContext = new SQLContext(sc);
+SparkSession spark = SparkSession.builder().getOrCreate();
 StructType customSchema = new StructType(new StructField[] {
   new StructField("_id", DataTypes.StringType, true, Metadata.empty()),
   new StructField("author", DataTypes.StringType, true, Metadata.empty()),
@@ -280,14 +260,14 @@ StructType customSchema = new StructType(new StructField[] {
   new StructField("title", DataTypes.StringType, true, Metadata.empty())
 });
 
-DataFrame df = sqlContext.read()
-  .format("com.databricks.spark.xml")
+DataFrame df = spark.read()
+  .format("xml")
   .option("rowTag", "book")
   .schema(customSchema)
   .load("books.xml");
 
 df.select("author", "_id").write()
-  .format("com.databricks.spark.xml")
+  .format("xml")
   .option("rootTag", "books")
   .option("rowTag", "book")
   .save("newbooks.xml");
@@ -296,22 +276,22 @@ df.select("author", "_id").write()
 ### Python API
 
 ```python
-from pyspark.sql import SQLContext
-sqlContext = SQLContext(sc)
+from pyspark.sql import SparkSession
+spark = SparkSession.builder.getOrCreate()
 
-df = sqlContext.read.format('com.databricks.spark.xml').options(rowTag='book').load('books.xml')
+df = spark.read.format('xml').options(rowTag='book').load('books.xml')
 df.select("author", "_id").write \
-    .format('com.databricks.spark.xml') \
+    .format('xml') \
     .options(rowTag='book', rootTag='books') \
     .save('newbooks.xml')
 ```
 
 You can manually specify schema:
 ```python
-from pyspark.sql import SQLContext
+from pyspark.sql import SparkSession
 from pyspark.sql.types import *
 
-sqlContext = SQLContext(sc)
+spark = SparkSession.builder.getOrCreate()
 customSchema = StructType([ \
     StructField("_id", StringType(), True), \
     StructField("author", StringType(), True), \
@@ -321,13 +301,13 @@ customSchema = StructType([ \
     StructField("publish_date", StringType(), True), \
     StructField("title", StringType(), True)])
 
-df = sqlContext.read \
-    .format('com.databricks.spark.xml') \
+df = spark.read \
+    .format('xml') \
     .options(rowTag='book') \
     .load('books.xml', schema = customSchema)
 
 df.select("author", "_id").write \
-    .format('com.databricks.spark.xml') \
+    .format('xml') \
     .options(rowTag='book', rootTag='books') \
     .save('newbooks.xml')
 ```
@@ -338,58 +318,60 @@ Automatically infer schema (data types)
 ```R
 library(SparkR)
 
-Sys.setenv('SPARKR_SUBMIT_ARGS'='"--packages" "com.databricks:spark-xml_2.10:0.4.1" "sparkr-shell"')
-sqlContext <- sparkRSQL.init(sc)
+sparkR.session("local[4]", sparkPackages = c("com.databricks:spark-xml_2.10:0.5"))
 
-df <- read.df(sqlContext, "books.xml", source = "com.databricks.spark.xml", rowTag = "book")
+df <- read.df("books.xml", source = "xml", rowTag = "book")
 
 # In this case, `rootTag` is set to "ROWS" and `rowTag` is set to "ROW".
-write.df(df, "newbooks.csv", "com.databricks.spark.xml", "overwrite")
+write.df(df, "newbooks.csv", "xml", "overwrite")
 ```
 
 You can manually specify schema:
 ```R
 library(SparkR)
 
-Sys.setenv('SPARKR_SUBMIT_ARGS'='"--packages" "com.databricks:spark-csv_2.10:0.4.1" "sparkr-shell"')
-sqlContext <- sparkRSQL.init(sc)
+sparkR.session("local[4]", sparkPackages = c("com.databricks:spark-xml_2.10:0.5"))
 customSchema <- structType(
-    structField("_id", "string"),
-    structField("author", "string"),
-    structField("description", "string"),
-    structField("genre", "string"),
-    structField("price", "double"),
-    structField("publish_date", "string"),
-    structField("title", "string"))
+  structField("_id", "string"),
+  structField("author", "string"),
+  structField("description", "string"),
+  structField("genre", "string"),
+  structField("price", "double"),
+  structField("publish_date", "string"),
+  structField("title", "string"))
 
-df <- read.df(sqlContext, "books.xml", source = "com.databricks.spark.xml", rowTag = "book")
+df <- read.df("books.xml", source = "xml", schema = customSchema, rowTag = "book")
 
 # In this case, `rootTag` is set to "ROWS" and `rowTag` is set to "ROW".
-write.df(df, "newbooks.csv", "com.databricks.spark.xml", "overwrite")
+write.df(df, "newbooks.csv", "xml", "overwrite")
 ```
 
 ## Hadoop InputFormat
 
-The library contains a Hadoop input format for reading XML files by a start tag and an end tag. This is similar with [XmlInputFormat.java](https://github.com/apache/mahout/blob/9d14053c80a1244bdf7157ab02748a492ae9868a/integration/src/main/java/org/apache/mahout/text/wikipedia/XmlInputFormat.java) in [Mahout](http://mahout.apache.org) but supports to read compressed files, different encodings and read elements including attributes,
+The library contains a Hadoop input format for reading XML files by a start tag and an end tag. This is similar with [XmlInputFormat.java](https://github.com/apache/mahout/blob/9d14053c80a1244bdf7157ab02748a492ae9868a/integration/src/main/java/org/apache/mahout/text/wikipedia/XmlInputFormat.java) in [Mahout](https://mahout.apache.org) but supports to read compressed files, different encodings and read elements including attributes,
 which you may make direct use of as follows:
 
 ```scala
 import com.databricks.spark.xml.XmlInputFormat
+import org.apache.spark.SparkContext;
+import org.apache.hadoop.io.{LongWritable, Text}
+
+val sc: SparkContext = _
 
 // This will detect the tags including attributes
 sc.hadoopConfiguration.set(XmlInputFormat.START_TAG_KEY, "<book>")
 sc.hadoopConfiguration.set(XmlInputFormat.END_TAG_KEY, "</book>")
-sc.hadoopConfiguration.set(XmlInputFormat.ENCODING_KEY, "utf-8")
 
 val records = sc.newAPIHadoopFile(
-  path,
+  "path",
   classOf[XmlInputFormat],
   classOf[LongWritable],
   classOf[Text])
 ```
 
 ## Building From Source
-This library is built with [SBT](http://www.scala-sbt.org/0.13/docs/Command-Line-Reference.html), which is automatically downloaded by the included shell script. To build a JAR file simply run `sbt/sbt package` from the project root. The build configuration includes support for both Scala 2.10 and 2.11.
+
+This library is built with [SBT](https://www.scala-sbt.org/0.13/docs/Command-Line-Reference.html). To build a JAR file simply run `sbt package` from the project root. The build configuration includes support for both Scala 2.11 and 2.12.
 
 ## Acknowledgements
 

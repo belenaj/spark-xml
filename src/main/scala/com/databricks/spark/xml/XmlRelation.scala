@@ -18,7 +18,6 @@ package com.databricks.spark.xml
 import java.io.IOException
 
 import org.apache.hadoop.fs.Path
-import org.slf4j.LoggerFactory
 
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql._
@@ -34,10 +33,7 @@ case class XmlRelation protected[spark] (
     userSchema: StructType = null)(@transient val sqlContext: SQLContext)
   extends BaseRelation
   with InsertableRelation
-  with TableScan
   with PrunedScan {
-
-  private val logger = LoggerFactory.getLogger(XmlRelation.getClass)
 
   private val options = XmlOptions(parameters)
 
@@ -49,25 +45,13 @@ case class XmlRelation protected[spark] (
     }
   }
 
-  override def buildScan(): RDD[Row] = {
-    StaxXmlParser.parse(
-      baseRDD(),
-      schema,
-      options)
-  }
-
   override def buildScan(requiredColumns: Array[String]): RDD[Row] = {
     val requiredFields = requiredColumns.map(schema(_))
-    val schemaFields = schema.fields
-    if (schemaFields.deep == requiredFields.deep) {
-      buildScan()
-    } else {
-      val requestedSchema = StructType(requiredFields)
-      StaxXmlParser.parse(
-        baseRDD(),
-        requestedSchema,
-        options)
-    }
+    val requestedSchema = StructType(requiredFields)
+    StaxXmlParser.parse(
+      baseRDD(),
+      requestedSchema,
+      options)
   }
 
   // The function below was borrowed from JSONRelation

@@ -15,16 +15,16 @@
  */
 package com.databricks.spark.xml.util
 
-import java.io.ByteArrayInputStream
+import java.io.StringReader
+import java.util.Comparator
+
 import javax.xml.stream._
 import javax.xml.stream.events._
 
-import scala.collection.JavaConversions._
+import scala.collection.JavaConverters._
 import scala.collection.Seq
 import scala.collection.mutable.ArrayBuffer
 import scala.util.control.NonFatal
-
-import org.slf4j.LoggerFactory
 
 import com.databricks.spark.xml.XmlOptions
 import com.databricks.spark.xml.parsers.StaxXmlParserUtils
@@ -33,7 +33,6 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.types._
 
 private[xml] object InferSchema {
-  private val logger = LoggerFactory.getLogger(InferSchema.getClass)
 
   /**
    * Copied from internal Spark api
@@ -50,7 +49,7 @@ private[xml] object InferSchema {
       TimestampType,
       DecimalType.SYSTEM_DEFAULT)
 
-  val findTightestCommonTypeOfTwo: (DataType, DataType) => Option[DataType] = {
+  private val findTightestCommonTypeOfTwo: (DataType, DataType) => Option[DataType] = {
     case (t1, t2) if t1 == t2 => Some(t1)
 
     // Promote numeric types to the highest of the two
@@ -61,6 +60,12 @@ private[xml] object InferSchema {
     case _ => None
   }
 
+  private[this] val structFieldComparator = new Comparator[StructField] {
+    override def compare(o1: StructField, o2: StructField): Int = {
+      o1.name.compare(o2.name)
+    }
+  }
+
   /**
    * Infer the type of a collection of XML records in three stages:
    *   1. Infer the type of each record
@@ -68,9 +73,6 @@ private[xml] object InferSchema {
    *   3. Replace any remaining null fields with string, the top type
    */
   def infer(xml: RDD[String], options: XmlOptions): StructType = {
-    require(options.samplingRatio > 0,
-      s"samplingRatio ($options.samplingRatio) should be greater than 0")
-    val shouldHandleCorruptRecord = options.permissive
     val schemaData = if (options.samplingRatio > 0.99) {
       xml
     } else {
@@ -90,25 +92,23 @@ private[xml] object InferSchema {
       iter.flatMap { xml =>
         // It does not have to skip for white space, since [[XmlInputFormat]]
         // always finds the root tag without a heading space.
-        val reader = new ByteArrayInputStream(xml.getBytes)
-        val eventReader = factory.createXMLEventReader(reader)
+        val eventReader = factory.createXMLEventReader(new StringReader(xml))
         val parser = factory.createFilteredReader(eventReader, filter)
         try {
           val rootEvent =
             StaxXmlParserUtils.skipUntil(parser, XMLStreamConstants.START_ELEMENT)
           val rootAttributes =
-            rootEvent.asStartElement.getAttributes.map(_.asInstanceOf[Attribute]).toArray
+            rootEvent.asStartElement.getAttributes.asScala.map(_.asInstanceOf[Attribute]).toArray
 
           Some(inferObject(parser, options, rootAttributes))
         } catch {
-          case NonFatal(_) if shouldHandleCorruptRecord =>
+          case NonFatal(_) if options.parseMode == PermissiveMode =>
             Some(StructType(Seq(StructField(options.columnNameOfCorruptRecord, StringType))))
           case NonFatal(_) =>
             None
         }
       }
-    }.treeAggregate[DataType](StructType(Seq()))(
-        compatibleType(options), compatibleType(options))
+    }.fold(StructType(Seq()))(compatibleType(options))
 
     canonicalizeType(rootType) match {
       case Some(st: StructType) => st
@@ -133,7 +133,7 @@ private[xml] object InferSchema {
       case v if isDouble(v) => DoubleType
       case v if isBoolean(v) => BooleanType
       case v if isTimestamp(v) => TimestampType
-      case v => StringType
+      case _ => StringType
     }
   }
 
@@ -157,7 +157,7 @@ private[xml] object InferSchema {
         // This means data exists
         inferFrom(c.getData, options)
       case e: XMLEvent =>
-        sys.error(s"Failed to parse data with unexpected event ${e.toString}")
+        sys.error(s"Failed to parse data with unexpected event $e")
     }
   }
 
@@ -168,42 +168,45 @@ private[xml] object InferSchema {
       parser: XMLEventReader,
       options: XmlOptions,
       rootAttributes: Array[Attribute] = Array.empty): DataType = {
-    val builder = Seq.newBuilder[StructField]
+    val builder = Array.newBuilder[StructField]
     val nameToDataType = collection.mutable.Map.empty[String, ArrayBuffer[DataType]]
+    // If there are attributes, then we should process them first.
+    val rootValuesMap =
+      StaxXmlParserUtils.convertAttributesToValuesMap(rootAttributes, options)
+    rootValuesMap.foreach {
+      case (f, v) =>
+        nameToDataType += (f -> ArrayBuffer(inferFrom(v, options)))
+    }
     var shouldStop = false
     while (!shouldStop) {
       parser.nextEvent match {
         case e: StartElement =>
-          // If there are attributes, then we should process them first.
-          val rootValuesMap =
-            StaxXmlParserUtils.convertAttributesToValuesMap(rootAttributes, options)
-          rootValuesMap.foreach {
-            case (f, v) =>
-              nameToDataType += (f -> ArrayBuffer(inferFrom(v, options)))
-          }
-
-          val attributes = e.getAttributes.map(_.asInstanceOf[Attribute]).toArray
+          val attributes = e.getAttributes.asScala.map(_.asInstanceOf[Attribute]).toArray
           val valuesMap = StaxXmlParserUtils.convertAttributesToValuesMap(attributes, options)
           val inferredType = inferField(parser, options) match {
             case st: StructType if valuesMap.nonEmpty =>
               // Merge attributes to the field
-              val nestedBuilder = Seq.newBuilder[StructField]
+              val nestedBuilder = Array.newBuilder[StructField]
               nestedBuilder ++= st.fields
               valuesMap.foreach {
                 case (f, v) =>
                   nestedBuilder += StructField(f, inferFrom(v, options), nullable = true)
               }
-              StructType(nestedBuilder.result().sortBy(_.name))
+              val nesterBuilderArr = nestedBuilder.result()
+              java.util.Arrays.sort(nesterBuilderArr, structFieldComparator)
+              StructType(nesterBuilderArr)
 
             case dt: DataType if valuesMap.nonEmpty =>
               // We need to manually add the field for value.
-              val nestedBuilder = Seq.newBuilder[StructField]
+              val nestedBuilder = Array.newBuilder[StructField]
               nestedBuilder += StructField(options.valueTag, dt, nullable = true)
               valuesMap.foreach {
                 case (f, v) =>
                   nestedBuilder += StructField(f, inferFrom(v, options), nullable = true)
               }
-              StructType(nestedBuilder.result().sortBy(_.name))
+              val nesterBuilderArr = nestedBuilder.result()
+              java.util.Arrays.sort(nesterBuilderArr, structFieldComparator)
+              StructType(nesterBuilderArr)
 
             case dt: DataType => dt
           }
@@ -222,20 +225,24 @@ private[xml] object InferSchema {
     }
     // We need to manually merges the fields having the sames so that
     // This can be inferred as ArrayType.
-    nameToDataType.foreach{
+    nameToDataType.foreach {
       case (field, dataTypes) if dataTypes.length > 1 =>
         val elementType = dataTypes.reduceLeft(InferSchema.compatibleType(options))
         builder += StructField(field, ArrayType(elementType), nullable = true)
       case (field, dataTypes) =>
         builder += StructField(field, dataTypes.head, nullable = true)
     }
-    StructType(builder.result().sortBy(_.name))
+
+    val fields = builder.result()
+    // Note: other code relies on this sorting for correctness, so don't remove it!
+    java.util.Arrays.sort(fields, structFieldComparator)
+    StructType(fields)
   }
 
   /**
    * Convert NullType to StringType and remove StructTypes with no fields
    */
-  private def canonicalizeType: DataType => Option[DataType] = {
+  private def canonicalizeType(dt: DataType): Option[DataType] = dt match {
     case at @ ArrayType(elementType, _) =>
       for {
         canonicalType <- canonicalizeType(elementType)
@@ -245,12 +252,11 @@ private[xml] object InferSchema {
 
     case StructType(fields) =>
       val canonicalFields = for {
-        field <- fields
-        if field.name.nonEmpty
+        field <- fields if field.name.nonEmpty
         canonicalType <- canonicalizeType(field.dataType)
       } yield {
-          field.copy(dataType = canonicalType)
-        }
+        field.copy(dataType = canonicalType)
+      }
 
       if (canonicalFields.nonEmpty) {
         Some(StructType(canonicalFields))
@@ -273,9 +279,9 @@ private[xml] object InferSchema {
       (t1, t2) match {
         // Double support larger range than fixed decimal, DecimalType.Maximum should be enough
         // in most case, also have better precision.
-        case (DoubleType, t: DecimalType) =>
+        case (DoubleType, _: DecimalType) =>
           DoubleType
-        case (t: DecimalType, DoubleType) =>
+        case (_: DecimalType, DoubleType) =>
           DoubleType
         case (t1: DecimalType, t2: DecimalType) =>
           val scale = math.max(t1.scale, t2.scale)
@@ -288,12 +294,14 @@ private[xml] object InferSchema {
           }
 
         case (StructType(fields1), StructType(fields2)) =>
-          val newFields = (fields1 ++ fields2).groupBy(field => field.name).map {
+          val newFields = (fields1 ++ fields2).groupBy(_.name).map {
             case (name, fieldTypes) =>
               val dataType = fieldTypes.view.map(_.dataType).reduce(compatibleType(options))
               StructField(name, dataType, nullable = true)
           }
-          StructType(newFields.toSeq.sortBy(_.name))
+          val newFieldsArr = newFields.toArray
+          java.util.Arrays.sort(newFieldsArr, structFieldComparator)
+          StructType(newFieldsArr)
 
         case (ArrayType(elementType1, containsNull1), ArrayType(elementType2, containsNull2)) =>
           ArrayType(

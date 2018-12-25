@@ -22,6 +22,7 @@ import java.util.Locale
 
 import scala.util.Try
 import scala.util.control.Exception._
+import scala.util.control.NonFatal
 
 import org.apache.spark.sql.types._
 import com.databricks.spark.xml.XmlOptions
@@ -60,13 +61,23 @@ object TypeCast {
           .getOrElse(NumberFormat.getInstance(Locale.getDefault).parse(datum).floatValue())
         case _: DoubleType => Try(datum.toDouble)
           .getOrElse(NumberFormat.getInstance(Locale.getDefault).parse(datum).doubleValue())
-        case _: BooleanType => datum.toBoolean
+        case _: BooleanType => parseXmlBoolean(datum)
         case _: DecimalType => new BigDecimal(datum.replaceAll(",", ""))
         case _: TimestampType => Timestamp.valueOf(datum)
         case _: DateType => Date.valueOf(datum)
         case _: StringType => datum
         case _ => throw new RuntimeException(s"Unsupported type: ${castType.typeName}")
       }
+    }
+  }
+
+  private def parseXmlBoolean(s: String): Boolean = {
+    s.toLowerCase match {
+      case "true" => true
+      case "false" => false
+      case "1" => true
+      case "0" => false
+      case _ => throw new IllegalArgumentException(s"For input string: $s")
     }
   }
 
@@ -80,29 +91,31 @@ object TypeCast {
     } else {
       datum
     }
-
-    dataType match {
-      case NullType => castTo(value, StringType, options)
-      case LongType => signSafeToLong(value, options)
-      case DoubleType => signSafeToDouble(value, options)
-      case BooleanType => castTo(value, BooleanType, options)
-      case StringType => castTo(value, StringType, options)
-      case DateType => castTo(value, DateType, options)
-      case TimestampType => castTo(value, TimestampType, options)
-      case FloatType => signSafeToFloat(value, options)
-      case ByteType => castTo(value, ByteType, options)
-      case ShortType => castTo(value, ShortType, options)
-      case IntegerType => signSafeToInt(value, options)
-      case dt: DecimalType => castTo(value, dt, options)
-      case _ =>
-        sys.error(s"Failed to parse a value for data type $dataType.")
+    try {
+      dataType match {
+        case NullType => castTo(value, StringType, options)
+        case LongType => signSafeToLong(value, options)
+        case DoubleType => signSafeToDouble(value, options)
+        case BooleanType => castTo(value, BooleanType, options)
+        case StringType => castTo(value, StringType, options)
+        case DateType => castTo(value, DateType, options)
+        case TimestampType => castTo(value, TimestampType, options)
+        case FloatType => signSafeToFloat(value, options)
+        case ByteType => castTo(value, ByteType, options)
+        case ShortType => castTo(value, ShortType, options)
+        case IntegerType => signSafeToInt(value, options)
+        case dt: DecimalType => castTo(value, dt, options)
+        case _ =>
+          sys.error(s"Failed to parse a value for data type $dataType.")
+      }
+    } catch {
+      case NonFatal(_) if options.parseMode == PermissiveMode => null
     }
   }
 
   /**
    * Helper method that checks and cast string representation of a numeric types.
    */
-
   private[xml] def isBoolean(value: String): Boolean = {
     value.toLowerCase match {
       case "true" | "false" => true

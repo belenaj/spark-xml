@@ -1,38 +1,34 @@
 name := "spark-xml"
 
-version := "0.4.1"
+version := "0.5.0"
 
 organization := "com.databricks"
 
-scalaVersion := "2.11.7"
+scalaVersion := "2.11.12"
 
 spName := "databricks/spark-xml"
 
-crossScalaVersions := Seq("2.10.5", "2.11.7")
+crossScalaVersions := Seq("2.11.12", "2.12.8")
 
-sparkVersion := "2.0.0"
+// Necessary for JUnit tests to be found?
+crossPaths := false
 
-val testSparkVersion = settingKey[String]("The version of Spark to test against.")
+scalacOptions := Seq("-unchecked", "-deprecation")
 
-testSparkVersion := sys.props.get("spark.testVersion").getOrElse(sparkVersion.value)
-
-val testHadoopVersion = settingKey[String]("The version of Hadoop to test against.")
-
-testHadoopVersion := sys.props.getOrElse("hadoop.testVersion", "2.2.0")
+sparkVersion := sys.props.get("spark.testVersion").getOrElse("2.4.0")
 
 sparkComponents := Seq("core", "sql")
 
-libraryDependencies ++= Seq(
-  "org.slf4j" % "slf4j-api" % "1.7.5" % "provided",
-  "org.scalatest" %% "scalatest" % "2.2.1" % "test",
-  "com.novocode" % "junit-interface" % "0.9" % "test"
-)
+// To avoid packaging it, it's Provided below
+autoScalaLibrary := false
 
 libraryDependencies ++= Seq(
-  "org.apache.hadoop" % "hadoop-client" % testHadoopVersion.value % "test",
-  "org.apache.spark" %% "spark-core" % testSparkVersion.value % "test" force() exclude("org.apache.hadoop", "hadoop-client"),
-  "org.apache.spark" %% "spark-sql" % testSparkVersion.value % "test" force() exclude("org.apache.hadoop", "hadoop-client"),
-  "org.scala-lang" % "scala-library" % scalaVersion.value % "compile"
+  "org.slf4j" % "slf4j-api" % "1.7.25" % Provided,
+  "org.scalatest" %% "scalatest" % "3.0.3" % Test,
+  "com.novocode" % "junit-interface" % "0.11" % Test,
+  "org.apache.spark" %% "spark-core" % sparkVersion.value % Test,
+  "org.apache.spark" %% "spark-sql" % sparkVersion.value % Test,
+  "org.scala-lang" % "scala-library" % scalaVersion.value % Provided
 )
 
 // This is necessary because of how we explicitly specify Spark dependencies
@@ -45,7 +41,7 @@ spAppendScalaVersion := true
 
 spIncludeMaven := true
 
-pomExtra := (
+pomExtra :=
   <url>https://github.com/databricks/spark-xml</url>
   <licenses>
     <license>
@@ -62,16 +58,44 @@ pomExtra := (
     <developer>
       <id>hyukjinkwon</id>
       <name>Hyukjin Kwon</name>
-      <url>https://www.facebook.com/hyukjin.kwon.96</url>
     </developer>
-  </developers>)
+  </developers>
 
 parallelExecution in Test := false
 
 // Skip tests during assembly
 test in assembly := {}
 
-ScoverageSbtPlugin.ScoverageKeys.coverageHighlighting := {
-  if (scalaBinaryVersion.value == "2.10") false
-  else true
+// Prints JUnit tests in output
+testOptions in Test := Seq(Tests.Argument(TestFrameworks.JUnit, "-v"))
+
+mimaPreviousArtifacts := Set("com.databricks" %% "spark-xml" % "0.4.1")
+
+val ignoredABIProblems = {
+  import com.typesafe.tools.mima.core._
+  import com.typesafe.tools.mima.core.ProblemFilters._
+  Seq(
+    exclude[IncompatibleResultTypeProblem](
+      "com.databricks.spark.xml.XmlOptions.DEFAULT_NULL_VALUE"),
+    exclude[MissingClassProblem]("com.databricks.spark.xml.DefaultSource15"),
+    exclude[DirectMissingMethodProblem](
+      "com.databricks.spark.xml.util.XmlFile.DEFAULT_ROW_SEPARATOR"),
+    exclude[DirectMissingMethodProblem](
+      "com.databricks.spark.xml.util.InferSchema.findTightestCommonTypeOfTwo"),
+    exclude[DirectMissingMethodProblem]("com.databricks.spark.xml.XmlOptions.dropMalformed"),
+    exclude[DirectMissingMethodProblem]("com.databricks.spark.xml.XmlOptions.permissive"),
+    exclude[DirectMissingMethodProblem]("com.databricks.spark.xml.XmlOptions.failFast"),
+    exclude[MissingClassProblem]("com.databricks.spark.xml.util.ParseModes"),
+    exclude[MissingClassProblem]("com.databricks.spark.xml.util.ParseModes$"),
+    exclude[MissingTypesProblem]("com.databricks.spark.xml.XmlRelation"),
+    exclude[DirectMissingMethodProblem]("com.databricks.spark.xml.XmlRelation.buildScan"),
+    exclude[DirectMissingMethodProblem](
+      "com.databricks.spark.xml.parsers.StaxXmlParser.com$databricks$" +
+        "spark$xml$parsers$StaxXmlParser$$convertObject$default$4"),
+    exclude[DirectMissingMethodProblem](
+      "com.databricks.spark.xml.util.CompressionCodecs.getCodecClass")
+
+  )
 }
+
+mimaBinaryIssueFilters ++= ignoredABIProblems
