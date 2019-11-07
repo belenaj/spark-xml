@@ -21,6 +21,7 @@ import java.util.Comparator
 import javax.xml.stream._
 import javax.xml.stream.events._
 
+import scala.annotation.tailrec
 import scala.collection.JavaConverters._
 import scala.collection.Seq
 import scala.collection.mutable.ArrayBuffer
@@ -85,8 +86,11 @@ private[xml] object InferSchema {
       factory.setProperty(XMLInputFactory.IS_COALESCING, true)
       val filter = new EventFilter {
         override def accept(event: XMLEvent): Boolean =
-          // Ignore comments. This library does not treat comments.
-          event.getEventType != XMLStreamConstants.COMMENT
+          // Ignore comments and processing instructions
+          event.getEventType match {
+            case XMLStreamConstants.COMMENT | XMLStreamConstants.PROCESSING_INSTRUCTION => false
+            case _ => true
+          }
       }
 
       iter.flatMap { xml =>
@@ -125,18 +129,23 @@ private[xml] object InferSchema {
       datum
     }
 
-    value match {
-      case null => NullType
-      case v if v.isEmpty => NullType
-      case v if isLong(v) => LongType
-      case v if isInteger(v) => IntegerType
-      case v if isDouble(v) => DoubleType
-      case v if isBoolean(v) => BooleanType
-      case v if isTimestamp(v) => TimestampType
-      case _ => StringType
+    if (options.inferSchema) {
+      value match {
+        case null => NullType
+        case v if v.isEmpty => NullType
+        case v if isLong(v) => LongType
+        case v if isInteger(v) => IntegerType
+        case v if isDouble(v) => DoubleType
+        case v if isBoolean(v) => BooleanType
+        case v if isTimestamp(v) => TimestampType
+        case _ => StringType
+      }
+    } else {
+      StringType
     }
   }
 
+  @tailrec
   private def inferField(parser: XMLEventReader, options: XmlOptions): DataType = {
     parser.peek match {
       case _: EndElement => NullType
@@ -154,10 +163,21 @@ private[xml] object InferSchema {
           case _ => inferField(parser, options)
         }
       case c: Characters if !c.isWhiteSpace =>
-        // This means data exists
-        inferFrom(c.getData, options)
+        // This could be the characters of a character-only element, or could have mixed
+        // characters and other complex structure
+        val characterType = inferFrom(c.getData, options)
+        parser.nextEvent()
+        parser.peek match {
+          case _: StartElement =>
+            // Some more elements follow; so ignore the characters.
+            // Use the schema of the rest
+            inferObject(parser, options).asInstanceOf[StructType]
+          case _ =>
+            // That's all, just the character-only body; use that as the type
+            characterType
+        }
       case e: XMLEvent =>
-        sys.error(s"Failed to parse data with unexpected event $e")
+        throw new IllegalArgumentException(s"Failed to parse data with unexpected event $e")
     }
   }
 
@@ -219,8 +239,7 @@ private[xml] object InferSchema {
         case _: EndElement =>
           shouldStop = StaxXmlParserUtils.checkEndElement(parser)
 
-        case _ =>
-          shouldStop = shouldStop && parser.hasNext
+        case _ => // do nothing
       }
     }
     // We need to manually merges the fields having the sames so that

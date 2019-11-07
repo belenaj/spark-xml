@@ -1,6 +1,6 @@
 name := "spark-xml"
 
-version := "0.5.0"
+version := "0.7.0"
 
 organization := "com.databricks"
 
@@ -8,14 +8,11 @@ scalaVersion := "2.11.12"
 
 spName := "databricks/spark-xml"
 
-crossScalaVersions := Seq("2.11.12", "2.12.8")
-
-// Necessary for JUnit tests to be found?
-crossPaths := false
+crossScalaVersions := Seq("2.11.12", "2.12.10")
 
 scalacOptions := Seq("-unchecked", "-deprecation")
 
-sparkVersion := sys.props.get("spark.testVersion").getOrElse("2.4.0")
+sparkVersion := sys.props.get("spark.testVersion").getOrElse("2.4.4")
 
 sparkComponents := Seq("core", "sql")
 
@@ -23,8 +20,9 @@ sparkComponents := Seq("core", "sql")
 autoScalaLibrary := false
 
 libraryDependencies ++= Seq(
+  "commons-io" % "commons-io" % "2.6",
   "org.slf4j" % "slf4j-api" % "1.7.25" % Provided,
-  "org.scalatest" %% "scalatest" % "3.0.3" % Test,
+  "org.scalatest" %% "scalatest" % "3.0.8" % Test,
   "com.novocode" % "junit-interface" % "0.11" % Test,
   "org.apache.spark" %% "spark-core" % sparkVersion.value % Test,
   "org.apache.spark" %% "spark-sql" % sparkVersion.value % Test,
@@ -61,6 +59,18 @@ pomExtra :=
     </developer>
   </developers>
 
+publishTo := {
+  val nexus = "https://oss.sonatype.org/"
+  if (isSnapshot.value) Some("snapshots" at nexus + "content/repositories/snapshots")
+  else Some("releases" at nexus + "service/local/staging/deploy/maven2")
+}
+
+credentials += Credentials(
+  "Sonatype Nexus Repository Manager",
+  "oss.sonatype.org",
+  sys.env.getOrElse("USERNAME", ""),
+  sys.env.getOrElse("PASSWORD", ""))
+
 parallelExecution in Test := false
 
 // Skip tests during assembly
@@ -69,7 +79,7 @@ test in assembly := {}
 // Prints JUnit tests in output
 testOptions in Test := Seq(Tests.Argument(TestFrameworks.JUnit, "-v"))
 
-mimaPreviousArtifacts := Set("com.databricks" %% "spark-xml" % "0.4.1")
+mimaPreviousArtifacts := Set("com.databricks" %% "spark-xml" % "0.6.0")
 
 val ignoredABIProblems = {
   import com.typesafe.tools.mima.core._

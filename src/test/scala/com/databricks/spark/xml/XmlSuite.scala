@@ -55,6 +55,7 @@ final class XmlSuite extends FunSuite with BeforeAndAfterAll {
   private val carsMalformedFile = resDir + "cars-malformed.xml"
   private val dataTypesValidAndInvalid = resDir + "datatypes-valid-and-invalid.xml"
   private val nullNumbersFile = resDir + "null-numbers.xml"
+  private val nullEmptyStringFile = resDir + "null-empty-string.xml"
   private val emptyFile = resDir + "empty.xml"
   private val topicsFile = resDir + "topics-namespaces.xml"
   private val gpsEmptyField = resDir + "gps-empty-field.xml"
@@ -64,12 +65,18 @@ final class XmlSuite extends FunSuite with BeforeAndAfterAll {
   private val simpleNestedObjects = resDir + "simple-nested-objects.xml"
   private val nestedElementWithNameOfParent =
     resDir + "nested-element-with-name-of-parent.xml"
+  private val nestedElementWithAttributesAndNameOfParent =
+    resDir + "nested-element-with-attributes-and-name-of-parent.xml"
   private val booksMalformedAttributes = resDir + "books-malformed-attributes.xml"
   private val fiasHouse = resDir + "fias_house.xml"
   private val attributesStartWithNewLine = resDir + "attributesStartWithNewLine.xml"
   private val attributesStartWithNewLineLF = resDir + "attributesStartWithNewLineLF.xml"
   private val attributesStartWithNewLineCR = resDir + "attributesStartWithNewLineCR.xml"
   private val selfClosingTag = resDir + "self-closing-tag.xml"
+  private val textColumn = resDir + "textColumn.xml"
+  private val processing = resDir + "processing.xml"
+  private val mixedChildren = resDir + "mixed_children.xml"
+  private val mixedChildren2 = resDir + "mixed_children_2.xml"
 
   private val booksTag = "book"
   private val booksRootTag = "books"
@@ -785,15 +792,15 @@ final class XmlSuite extends FunSuite with BeforeAndAfterAll {
     assert(result(0) === Row(111, 222))
   }
 
-  test("Nested element with same name as parent delineation") {
-    val lines = Source.fromFile(nestedElementWithNameOfParent).getLines.toList
+  private[this] def testNextedElementFromFile(xmlFile: String) = {
+    val lines = Source.fromFile(xmlFile).getLines.toList
     val firstExpected = lines(2).trim
     val lastExpected = lines(3).trim
     val config = new Configuration(spark.sparkContext.hadoopConfiguration)
     config.set(XmlInputFormat.START_TAG_KEY, "<parent>")
     config.set(XmlInputFormat.END_TAG_KEY, "</parent>")
     val records = spark.sparkContext.newAPIHadoopFile(
-      nestedElementWithNameOfParent,
+      xmlFile,
       classOf[XmlInputFormat],
       classOf[LongWritable],
       classOf[Text],
@@ -804,6 +811,14 @@ final class XmlSuite extends FunSuite with BeforeAndAfterAll {
     val lastActual = list.last
     assert(firstActual === firstExpected)
     assert(lastActual === lastExpected)
+  }
+
+  test("Nested element with same name as parent delineation") {
+    testNextedElementFromFile(nestedElementWithNameOfParent)
+  }
+
+  test("Nested element including attribute with same name as parent delineation") {
+    testNextedElementFromFile(nestedElementWithAttributesAndNameOfParent)
   }
 
   test("Nested element with same name as parent schema inference") {
@@ -980,37 +995,86 @@ final class XmlSuite extends FunSuite with BeforeAndAfterAll {
         field("_int", IntegerType)),
       struct("long_value",
         field("_VALUE", LongType),
-        field("_int", IntegerType)),
+        field("_int", StringType)),
       field("float_value", FloatType),
       field("double_value", DoubleType),
       field("boolean_value", BooleanType),
-      field("string_value"),
-      array("integer_array", IntegerType))
+      field("string_value"), array("integer_array", IntegerType),
+      field("integer_map", MapType(StringType, IntegerType)),
+      field("_malformed_records", StringType))
     val results = spark.read
       .option("mode", "PERMISSIVE")
+      .option("columnNameOfCorruptRecord", "_malformed_records")
       .schema(schema)
       .xml(dataTypesValidAndInvalid)
 
     assert(results.schema === schema)
-    val objects = results.take(2)
-    assert(objects(0).getStruct(0)(0) === 10)
-    assert(objects(0).getStruct(0)(1) === 10)
-    assert(objects(0).getStruct(1)(0) === 10L)
-    assert(objects(0).getStruct(1)(1) === null)
-    assert(objects(0)(2) === 10.0)
-    assert(objects(0)(3) === 10.0)
-    assert(objects(0)(4) === true)
-    assert(objects(0)(5) === "Ten")
-    assert(objects(0)(6) === Array(1, 2))
-    assert(objects(1).getStruct(0)(0) === null)
-    assert(objects(1).getStruct(0)(1) === null)
-    assert(objects(1).getStruct(1)(0) === null)
-    assert(objects(1).getStruct(1)(1) === 10)
-    assert(objects(1)(2) === null)
-    assert(objects(1)(3) === null)
-    assert(objects(1)(4) === null)
-    assert(objects(1)(5) === "Ten")
-    assert(objects(1)(6) === Array(null, 2))
+
+    val Array(valid, invalid) = results.take(2)
+
+    assert(valid.toSeq.toArray.take(schema.length - 1) ===
+      Array(Row(10, 10), Row(10, "Ten"), 10.0, 10.0, true,
+        "Ten", Array(1, 2), Map("a" -> 123, "b" -> 345)))
+    assert(invalid.toSeq.toArray.take(schema.length - 1) ===
+      Array(null, null, null, null, null,
+        "Ten", Array(2), null))
+
+    assert(valid.toSeq.toArray.last === null)
+    assert(invalid.toSeq.toArray.last.toString.contains(
+      <integer_value int="Ten">Ten</integer_value>.toString))
+  }
+
+  test("empty string to null and back") {
+    val fruit = spark.read
+      .option("rowTag", "row")
+      .option("nullValue", "")
+      .xml(nullEmptyStringFile)
+    assert(fruit.head().getAs[String]("color") === null)
+  }
+
+  test("test all string data type infer strategy") {
+    val text = spark.read
+      .option("rowTag", "ROW")
+      .option("inferSchema", "false")
+      .xml(textColumn)
+    assert(text.head().getAs[String]("col1") === "00010")
+
+  }
+
+  test("test default data type infer strategy") {
+    val default = spark.read
+      .option("rowTag", "ROW")
+      .option("inferSchema", "true")
+      .xml(textColumn)
+    assert(default.head().getAs[Int]("col1") === 10)
+  }
+
+  test("test XML with processing instruction") {
+    val processingDF = spark.read
+      .option("rowTag", "foo")
+      .option("inferSchema", "true")
+      .xml(processing)
+    assert(processingDF.count() === 1)
+  }
+
+  test("test mixed text and element children") {
+    val mixedDF = spark.read
+      .option("rowTag", "root")
+      .option("inferSchema", true)
+      .xml(mixedChildren)
+    val mixedRow = mixedDF.head()
+    assert(mixedRow.getAs[Row](0).toSeq === Seq(" lorem "))
+    assert(mixedRow.getString(1) === " ipsum ")
+  }
+
+  test("test mixed text and complex element children") {
+    val mixedDF = spark.read
+      .option("rowTag", "root")
+      .option("inferSchema", true)
+      .xml(mixedChildren2)
+    assert(mixedDF.select("foo.bar").head().getString(0) === " lorem ")
+    assert(mixedDF.select("foo.baz.bing").head().getLong(0) === 2)
+    assert(mixedDF.select("missing").head().getString(0) === " ipsum ")
   }
 
 }
